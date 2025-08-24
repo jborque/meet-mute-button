@@ -25,13 +25,11 @@
  */
 
 #include <tusb.h>
-
-#include "our_descriptor.h"
+#include <me.h>
+#include <our_descriptor.h>
 
 // These IDs are bogus. If you want to distribute any hardware using this,
 // you will have to get real ones.
-#define USB_VID 0xCAFE
-#define USB_PID 0xBA11
 
 tusb_desc_device_t const desc_device = {
     .bLength = sizeof(tusb_desc_device_t),
@@ -65,10 +63,10 @@ uint8_t const desc_configuration[] = {
 };
 
 char const* string_desc_arr[] = {
-    (const char[]){ 0x09, 0x04 },  // 0: is supported language is English (0x0409)
-    "Arasaka",                     // 1: Manufacturer
-    "Mute button",                 // 2: Product
-    "123456",                      // 3: Serial (we should use flash chip ID or whatever)
+    (const char[]){ 0x09, 0x04 },        // 0: is supported language is English (0x0409)
+    manufacturer,                        // 1: Manufacturer
+    product,                             // 2: Product
+    serial_str,                          // 3: Serial (we should use flash chip ID or whatever)
 };
 
 // Invoked when received GET DEVICE DESCRIPTOR

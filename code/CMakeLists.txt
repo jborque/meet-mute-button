@@ -11,12 +11,15 @@ pico_sdk_init()
 
 add_compile_options(-Wall)
 
-add_executable(mute_button src/mute_button.cc src/tinyusb_stuff.cc src/our_descriptor.cc src/ws2812.cc)
+add_executable(mute_button src/mute_button.cc src/tinyusb_stuff.cc src/our_descriptor.cc src/me.cc src/ws2812.cc)
 
 pico_generate_pio_header(mute_button ${CMAKE_CURRENT_LIST_DIR}/src/ws2812.pio)
 
+pico_enable_stdio_usb(mute_button 0)
+pico_enable_stdio_uart(mute_button 1)
+
 target_include_directories(mute_button PRIVATE src)
 
-target_link_libraries(mute_button pico_stdlib hardware_pio tinyusb_device tinyusb_board)
+target_link_libraries(mute_button pico_stdlib pico_unique_id hardware_pio hardware_pwm tinyusb_device tinyusb_board)
 
 pico_add_extra_outputs(mute_button)
