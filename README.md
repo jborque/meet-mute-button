@@ -1,6 +1,6 @@
 # Mute button/status indicator for Google Meet
 
-This is a fork from the original meet-mute-button from [fedor2](https://github.com/jfedor2/meet-mute-button) tha is still undes construction.
+This is a fork from the original meet-mute-button from [fedor2](https://github.com/jfedor2/meet-mute-button) that is still under construction.
 
 I'm currently working on adding up-down volume and hangup capabilities while maintaining the form factor.
 
