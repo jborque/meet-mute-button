@@ -8,6 +8,8 @@
 #include <pico/stdio.h>
 
 #include "our_descriptor.h"
+#include "ws2812.h"
+
 #include "me.h"
 
 #define MUTE_BUTTON_PIN 1 << 19
@@ -57,6 +59,7 @@ int main() {
     leds_init();
     buttons_init();
     tusb_init();
+    neopixel_init();
 
     static char serial_str[PICO_UNIQUE_BOARD_ID_SIZE_BYTES * 2 + 1];
     pico_get_unique_board_id_string(serial_str, sizeof(serial_str));
@@ -235,7 +238,7 @@ void led_blinking_task(void) {
     static int fade = 0;
     static bool going_up = true;
 
-    if(led_usb_state) {
+    if(led_usb_state && !led_oncall_state) {
         if (going_up) {
             fade+=16;
             if (fade > 255) {
@@ -251,6 +254,7 @@ void led_blinking_task(void) {
             }
         }
         pwm_set_gpio_level(PWM_LED_PIN, fade * fade);
+        put_pixel((fade*fade)>>8);
         next_blink_interval_ms = 10;
     } else {
         led_usb_state = true;
@@ -266,6 +270,7 @@ void leds_init() {
     gpio_init_mask(LED_MASK);
     gpio_set_dir_out_masked(LED_MASK);
     gpio_put_masked(LED_MASK,0x00000000);
+    put_pixel(0x000000);
 }    
 
 //--------------------------------------------------------------------+
@@ -294,11 +299,14 @@ void leds_update() {
 
         if(led_mute_state){
             leds=LED_R_PIN;
+            put_pixel(0xff<<8);
         } else {
             leds=LED_G_PIN;
+            put_pixel(0xff<<16);
         }
     } else {
         pwm_set_enabled(slice_num,true);
+        put_pixel(0x000000);
 
     }
     
