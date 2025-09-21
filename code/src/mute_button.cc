@@ -184,13 +184,8 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
         else unset_state(STATE_MUTE);
         
         printf("tud_hid_set_report_cb: state=%u\n",state);
-        
-        static bool on_call=false;
-        if ( on_call != get_state(STATE_ONCALL) ) {
-            on_call = get_state(STATE_ONCALL);
-            //uint8_t hook = 0;
-            //if( state & STATE_ONCALL ) hook = 2;            
-            //tud_hid_report(REPORT_ID_TELEPHONY, &hook, 1);
+
+        if (get_state(STATE_ONCALL)) {
             q_push(HOOK_UP);
             printf("tud_hid_set_report_cb: HOOK_UP");
         }
@@ -206,17 +201,17 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
 
 void button_task() {
     // Poll every 10ms
-    const uint32_t interval_ms = 10;
+    const uint32_t interval_ms = 100;
     uint32_t current_ms = board_millis();
     static uint32_t start_ms = 0;
     static uint32_t pressed_ms = 0;
 
     static uint32_t prev_button_state = 0x000000;
 
+    if ( current_ms - start_ms < interval_ms || !tud_hid_ready() ) return; // not enough time
+    
     start_ms += interval_ms;
     
-    if ( current_ms - start_ms < interval_ms || !tud_hid_ready() ) return; // not enough time
-
     //if ( !( state & STATE_ONCALL ) ) return; // Don't do anything if not in a call.
     
     uint32_t button_state = ( ~ gpio_get_all() ) & BUTTON_MASK;
@@ -230,6 +225,7 @@ void button_task() {
         }
         q_push(MUTE_DOWN);            
         printf("MUTE_DOWN\n");
+        pressed_ms = current_ms;
     }
 
     else if ( !(button_state & MUTE_BUTTON_PIN) && (prev_button_state & MUTE_BUTTON_PIN) ) {
@@ -241,6 +237,7 @@ void button_task() {
         }
         q_push(MUTE_UP);
         printf("MUTE_UP\n");
+        pressed_ms = current_ms;
     }
     
     else if ( (button_state & HOOK_BUTTON_PIN) && !(prev_button_state & HOOK_BUTTON_PIN) ) {
@@ -267,7 +264,6 @@ void button_task() {
         q_push(VOLX_UP);
         printf("VOLX_UP\n");
     }
-    pressed_ms = current_ms;
     prev_button_state = button_state;
 
 }
@@ -343,16 +339,15 @@ void put_all_pixels(uint32_t pixel_grb) {
 // LED TASK
 //--------------------------------------------------------------------+
 void led_task(void) {
-
+    
     static uint32_t start_ms = board_millis();
     static uint32_t interval_ms = 20;
-    static uint8_t prev_state = state;
     static int fade = 5;
     static bool going_up = true;
+    static bool must_update = true;
     
     if( !get_state(STATE_ONCALL) ) {
-        if ( ( board_millis() - start_ms < interval_ms ) ) 
-        return;
+        if ( ( board_millis() - start_ms < interval_ms ) ) return;
         start_ms += interval_ms;
         interval_ms = BLINK_STEP;
         if (going_up) {
@@ -381,18 +376,22 @@ void led_task(void) {
         c <<= 8;
         c |= fade;
         put_all_pixels(c);
+        must_update = true;
     } else {
-        interval_ms = 50;
-        if ( ( board_millis() - start_ms < interval_ms ) ) 
-            return;
+        interval_ms = 20;
+        if ( ( board_millis() - start_ms < interval_ms ) ) return;
         start_ms += interval_ms;
-        if (prev_state != state) {
+        static bool prev_mute_state = true;
+        bool mute_state = get_state(STATE_MUTE);
+        must_update |= prev_mute_state != mute_state;
+        if ( must_update ) {
             if(get_state(STATE_MUTE)) {
                 put_all_pixels(0x00ff00);
             } else {
                 put_all_pixels(0xff0000);
             }
-            prev_state = state;
+            prev_mute_state = mute_state;
+            must_update = false;
         }
     }
 
