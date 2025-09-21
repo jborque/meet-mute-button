@@ -12,6 +12,20 @@
 
 #include "me.h"
 
+// Neopixel definitions
+#define IS_RGBW false
+#define WS2812_PIN 2
+#define NUM_PIXELS 1
+
+#define BLINK_ON_INTERVAL 1000
+#define BLINK_NOT_MOUNTED 100
+#define BLINK_MOUNTED 5000  
+#define BLINK_SUSPENDED 20000
+#define BLINK_STEP 100
+
+
+
+// Button definitions
 #define MUTE_BUTTON_PIN 1 << 19
 #define HOOK_BUTTON_PIN 1 << 21
 #define VOLU_BUTTON_PIN 1 << 18
@@ -19,69 +33,111 @@
 
 const uint32_t BUTTON_MASK = MUTE_BUTTON_PIN | HOOK_BUTTON_PIN | VOLU_BUTTON_PIN | VOLD_BUTTON_PIN;
 
-#define PWM_LED_PIN 11
-#define LED_B_PIN 1 << 11
-#define LED_G_PIN 1 << 12
-#define LED_R_PIN 1 << 13
 
-//#define LED_MASK LED_B_PIN | LED_G_PIN | LED_R_PIN
-#define LED_MASK LED_G_PIN | LED_R_PIN
+// State Definitions
+#define STATE_USB_ON          0x01 << 0
+#define STATE_USB_MOUNTED     0x01 << 1
+#define STATE_USB_SUSPENDED   0x01 << 2
+#define STATE_USB_READY       0x01 << 3
+#define STATE_MUTE            0x01 << 4
+#define STATE_ONCALL          0x01 << 5
 
-#define BLINK_ON_INTERVAL 45
-#define BLINK_NOT_MOUNTED 250
-#define BLINK_MOUNTED 3000  
-#define BLINK_SUSPENDED 1500
+static uint8_t state = 0x00;
 
-static uint32_t blink_interval_ms = BLINK_NOT_MOUNTED;
+// Queue definitions
+#define Q_LENGTH 10
 
-static uint8_t led_usb_state = 0x00;
-static uint8_t led_mute_state = 0x00;
-static uint8_t led_oncall_state = 0x00;
+#define NOTHING   0
+#define MUTE_DOWN 1
+#define MUTE_UP   2
+#define HOOK_DOWN 3
+#define HOOK_UP   4
+#define VOLU_DOWN 5
+#define VOLD_DOWN 6
+#define VOLX_UP   7
 
-uint slice_num;
+static uint8_t queue[Q_LENGTH] = {0};
+static uint8_t queue_start=0;
+static uint8_t queue_end=0;
 
-void led_init(uint32_t led);
-void led_toggle(uint32_t led);
-void led_blink(uint32_t led);
-void leds_init();
-void leds_update();
+void led_init(uint pin, bool isRGBW);
+void led_toggle(uint32_t color);
+void led_blink(uint32_t color);
 
 void button_init(uint button);
 void buttons_init();
 
-void led_blinking_task(void);
+void led_task(void);
+void button_task(void);
 void hid_task(void);
 
 int main() {
+
     board_init();
     me_init();
     stdio_init_all();
-    leds_init();
+    led_init(WS2812_PIN, IS_RGBW);
     buttons_init();
     tusb_init();
-    neopixel_init();
 
+
+    sleep_ms(10);
+    if (!gpio_get(19)) {
+        sleep_ms(200);
+        led_blink(0xffff00);
+        sleep_ms(200);
+        reset_usb_boot(0, 0);
+    }
+    
     static char serial_str[PICO_UNIQUE_BOARD_ID_SIZE_BYTES * 2 + 1];
     pico_get_unique_board_id_string(serial_str, sizeof(serial_str));
 
     printf("Shhh - Mute button 0x01\nSerial: %s\n",serial_str);
-    
-    led_blink(LED_MASK);
 
-    gpio_set_function(PWM_LED_PIN, GPIO_FUNC_PWM);
-    slice_num = pwm_gpio_to_slice_num(PWM_LED_PIN);
-    pwm_config config = pwm_get_default_config();
-    pwm_config_set_clkdiv(&config, 8.f);
-    pwm_init(slice_num, &config, true);
+    led_blink(0x0f0f0f);
+    sleep_ms(200);
 
     while (true) {
         tud_task();
-        led_blinking_task();        
+        led_task();    
+        button_task();    
         hid_task();
     }
 
     return 0;
 
+}
+
+
+void q_push(uint8_t u) {
+    uint8_t next_queue_end=queue_end;
+    if( ++next_queue_end >= Q_LENGTH ) next_queue_end = 0;    
+    if( next_queue_end == queue_start ) {
+        printf("Queue Full: Ignoring");
+        return;
+    }
+    queue[queue_end]=u;
+    queue_end=next_queue_end;
+}
+
+uint8_t q_pop(void) {
+    if( queue_start == queue_end ) return NOTHING;
+    uint8_t ret = queue[queue_start];
+    queue[queue_start] = 0;
+    if( ++queue_start >= Q_LENGTH ) queue_start = 0;
+    return ret;
+}
+
+void set_state(uint8_t s) {
+    state |= s;
+}
+
+void unset_state(uint8_t s) {
+    state &= ~s;
+}
+
+bool get_state(uint8_t s) {
+    return s & state;
 }
 
 //--------------------------------------------------------------------+
@@ -90,43 +146,54 @@ int main() {
 
 // Invoked when device is mounted
 void tud_mount_cb(void) {
-  blink_interval_ms = BLINK_MOUNTED;
+    set_state(STATE_USB_MOUNTED);
 }
 
 // Invoked when device is unmounted
 void tud_umount_cb(void) {
-  blink_interval_ms = BLINK_NOT_MOUNTED;
+    unset_state(STATE_USB_ON);
 }
 
 // Invoked when usb bus is suspended
 // remote_wakeup_en : if host allow us to perform remote wakeup
 // Within 7ms, device must draw an average of current less than 2.5 mA from bus
 void tud_suspend_cb(bool remote_wakeup_en) {
-  (void) remote_wakeup_en;
-  blink_interval_ms = BLINK_SUSPENDED;
+    (void) remote_wakeup_en;
+    set_state(STATE_USB_SUSPENDED);
 }
 
 // Invoked when usb bus is resumed
 void tud_resume_cb(void) {
-  blink_interval_ms = tud_mounted() ? BLINK_MOUNTED : BLINK_NOT_MOUNTED;
+    unset_state(STATE_USB_SUSPENDED);
+    if (tud_mounted()) {
+        set_state(STATE_USB_MOUNTED);
+    } else {
+        unset_state(STATE_USB_MOUNTED);
+    }
 }
 
 // Invoked when HID report set
 void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer, uint16_t bufsize) {
     printf("tud_hid_set_report_cb: itf=%u report_id=%u  report_type=%u bufsize=%u\n",itf,report_id,report_type,bufsize);    
     if (bufsize >= 1 && report_id == REPORT_ID_TELEPHONY ) {
-        led_oncall_state = buffer[0] & 0x01;
-        led_mute_state = ( buffer[0] & 0x02 ) >> 1;
-        printf("tud_hid_set_report_cb: led_oncall_state=%u led_mute_state=%u\n",led_oncall_state,led_mute_state);
-        leds_update();
-
-        static uint8_t prev_led_oncall_state=0x00;
-        if (prev_led_oncall_state != led_oncall_state) {
-            uint8_t hook = ( led_oncall_state << 1 );
-            tud_hid_report(REPORT_ID_TELEPHONY, &hook, 1);
-            printf("REPORT_ID_TELEPHONY: tud_hid_set_report_cb led_oncall_state=%u hook=%u\n",led_oncall_state,hook);
+        
+        if(buffer[0] & 0x01) set_state(STATE_ONCALL);
+        else unset_state(STATE_ONCALL);
+        
+        if( buffer[0] & 0x02 ) set_state(STATE_MUTE);
+        else unset_state(STATE_MUTE);
+        
+        printf("tud_hid_set_report_cb: state=%u\n",state);
+        
+        static bool on_call=false;
+        if ( on_call != get_state(STATE_ONCALL) ) {
+            on_call = get_state(STATE_ONCALL);
+            //uint8_t hook = 0;
+            //if( state & STATE_ONCALL ) hook = 2;            
+            //tud_hid_report(REPORT_ID_TELEPHONY, &hook, 1);
+            q_push(HOOK_UP);
+            printf("tud_hid_set_report_cb: HOOK_UP");
         }
-        prev_led_oncall_state=led_oncall_state;
 
     }
 
@@ -137,8 +204,7 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
     return 0;
 }
 
-void hid_task() {
-
+void button_task() {
     // Poll every 10ms
     const uint32_t interval_ms = 10;
     uint32_t current_ms = board_millis();
@@ -149,168 +215,215 @@ void hid_task() {
 
     start_ms += interval_ms;
     
-    if (!tud_ready()) {
-        led_mute_state = 0x00;
-        led_oncall_state = 0x00;
-        return;
-    }
-    
     if ( current_ms - start_ms < interval_ms || !tud_hid_ready() ) return; // not enough time
 
-    if ( ! led_oncall_state ) return; // Don't do anything if not in a call.
-
+    //if ( !( state & STATE_ONCALL ) ) return; // Don't do anything if not in a call.
+    
     uint32_t button_state = ( ~ gpio_get_all() ) & BUTTON_MASK;
     
     if ( button_state == prev_button_state ) return;
 
     if ( (button_state & MUTE_BUTTON_PIN) && !(prev_button_state & MUTE_BUTTON_PIN) ) {
         if(current_ms-pressed_ms<500) {
-            uint8_t hook = 0; 
-            tud_hid_report(REPORT_ID_TELEPHONY, &hook, 1);
-            while (!tud_hid_ready()) {tud_task(); };
-            printf("REPORT_ID_TELEPHONY: down led_oncall_state=%u hook=%u\n",led_oncall_state,hook);
+            q_push(HOOK_DOWN);
+            printf("HOOK_DOWN\n");
         }
-        
-        uint8_t mute = led_oncall_state << 1 | 0x01;
-        tud_hid_report(REPORT_ID_TELEPHONY, &mute, 1);
-        printf("REPORT_ID_TELEPHONY: down mute=%u\n",mute);
-        pressed_ms = current_ms;
+        q_push(MUTE_DOWN);            
+        printf("MUTE_DOWN\n");
     }
 
     else if ( !(button_state & MUTE_BUTTON_PIN) && (prev_button_state & MUTE_BUTTON_PIN) ) {
-        uint8_t mute;
-        if (!led_mute_state && (current_ms-pressed_ms > 500)) {
-            mute = led_oncall_state << 1 | 0x00;
-            tud_hid_report(REPORT_ID_TELEPHONY, &mute, 1);
-            while (!tud_hid_ready()) {tud_task(); };
-            printf("REPORT_ID_TELEPHONY: AUTO mute=%u\n",mute);
-            mute = led_oncall_state << 1 | 0x01;
-            tud_hid_report(REPORT_ID_TELEPHONY, &mute, 1);
-            while (!tud_hid_ready()) {tud_task(); };
-            printf("REPORT_ID_TELEPHONY: AUTO mute=%u\n",mute);
+        if (!(state & STATE_MUTE) && (current_ms-pressed_ms > 500)) {
+            q_push(MUTE_UP);
+            printf("MUTE_UP\n");
+            q_push(MUTE_DOWN);            
+            printf("MUTE_DOWN\n");
         }
-        mute = led_oncall_state << 1 | 0x00;
-        tud_hid_report(REPORT_ID_TELEPHONY, &mute, 1);
-        printf("REPORT_ID_TELEPHONY: up mute=%u\n",mute);
-    }
-
-    else if ( (button_state & HOOK_BUTTON_PIN) && !(prev_button_state & HOOK_BUTTON_PIN) ) {
-        uint8_t hook = 0; 
-        tud_hid_report(REPORT_ID_TELEPHONY, &hook, 1);
-        printf("REPORT_ID_TELEPHONY: down led_oncall_state=%u hook=%u\n",led_oncall_state,hook);
-    }
-
-    else if ( (button_state & VOLD_BUTTON_PIN) && !(prev_button_state & VOLD_BUTTON_PIN) ) {
-        uint16_t volume_down = HID_USAGE_CONSUMER_VOLUME_DECREMENT;
-        tud_hid_report(REPORT_ID_CONSUMER_CONTROL, &volume_down, 1);
-    }
-
-    else if ( (button_state & VOLU_BUTTON_PIN) && !(prev_button_state & VOLU_BUTTON_PIN) ) {
-        uint16_t volume_up = HID_USAGE_CONSUMER_VOLUME_INCREMENT;
-        tud_hid_report(REPORT_ID_CONSUMER_CONTROL, &volume_up, 1);
-    }
-
-    else if ( !(button_state & (VOLU_BUTTON_PIN | VOLD_BUTTON_PIN) ) && (prev_button_state & (VOLU_BUTTON_PIN | VOLD_BUTTON_PIN) ) ) {
-        uint16_t empty_key = 0;
-        tud_hid_report(REPORT_ID_CONSUMER_CONTROL, &empty_key, 1);
+        q_push(MUTE_UP);
+        printf("MUTE_UP\n");
     }
     
+    else if ( (button_state & HOOK_BUTTON_PIN) && !(prev_button_state & HOOK_BUTTON_PIN) ) {
+        q_push(HOOK_DOWN);
+        printf("HOOK_DOWN\n");
+    }
+    
+    else if ( !(button_state & HOOK_BUTTON_PIN) && (prev_button_state & HOOK_BUTTON_PIN) ) {
+        q_push(HOOK_UP);
+        printf("HOOK_UP\n");
+    }
+    
+    else if ( (button_state & VOLD_BUTTON_PIN) && !(prev_button_state & VOLD_BUTTON_PIN) ) {
+        q_push(VOLD_DOWN);
+        printf("VOLD_DOWN\n");
+    }
+    
+    else if ( (button_state & VOLU_BUTTON_PIN) && !(prev_button_state & VOLU_BUTTON_PIN) ) {
+        q_push(VOLU_DOWN);
+        printf("VOLU_DOWN\n");
+    }
+    
+    else if ( !(button_state & (VOLU_BUTTON_PIN | VOLD_BUTTON_PIN) ) && (prev_button_state & (VOLU_BUTTON_PIN | VOLD_BUTTON_PIN) ) ) {
+        q_push(VOLX_UP);
+        printf("VOLX_UP\n");
+    }
+    pressed_ms = current_ms;
     prev_button_state = button_state;
 
 }
 
 
-//--------------------------------------------------------------------+
-// BLINKING TASK
-//--------------------------------------------------------------------+
-void led_blinking_task(void) {
+void hid_task() {
+    static uint8_t t_report=0x00;
+    static uint8_t prev_t_report=t_report;
 
-    static uint32_t start_ms = 0;
-    static uint32_t next_blink_interval_ms = 0;
-    // blink is disabled
-    if (!blink_interval_ms) return;
+    static uint16_t c_report=0x00;
+    static uint16_t prev_c_report=c_report;
 
-    // Blink every interval ms
-    if ( board_millis() - start_ms < next_blink_interval_ms) return; // not enough time
+    if (!tud_ready()) {
+        unset_state(STATE_USB_READY);
+        return;
+    }
+
+    set_state(STATE_USB_READY);
+
+    if ( !tud_hid_ready() ) return; 
     
-    start_ms += next_blink_interval_ms;
+    switch (q_pop())
+    {
+        case MUTE_DOWN:
+        t_report |= 0x01;
+        break;
+        case MUTE_UP:
+        t_report &= ~0x01;
+        break;        
+    case HOOK_DOWN:
+        t_report |= 0x02;
+        break;
+    case HOOK_UP:
+        t_report &= ~0x02;
+        break;  
+    case VOLD_DOWN:
+        c_report = HID_USAGE_CONSUMER_VOLUME_DECREMENT;
+        break;
+    case VOLU_DOWN:
+        c_report = HID_USAGE_CONSUMER_VOLUME_INCREMENT;
+        break;
+    case VOLX_UP:
+        c_report = 0;
+        break;
+    case NOTHING:
+    default:
+        return;
+        break;
+    }
+    
+    if ( prev_t_report != t_report ) {
+        tud_hid_report(REPORT_ID_TELEPHONY, &t_report, 1);
+        prev_t_report = t_report;
+        return;
+    }
 
-    static int fade = 0;
+    if ( prev_c_report != c_report ) {
+        tud_hid_report(REPORT_ID_CONSUMER_CONTROL, &c_report, 1);
+        prev_c_report = c_report;
+        return;
+    }
+
+}
+
+
+void put_all_pixels(uint32_t pixel_grb) {
+    for(uint8_t i=0; i<NUM_PIXELS; i++) {
+        put_pixel(pixel_grb);
+    }
+}
+
+//--------------------------------------------------------------------+
+// LED TASK
+//--------------------------------------------------------------------+
+void led_task(void) {
+
+    static uint32_t start_ms = board_millis();
+    static uint32_t interval_ms = 20;
+    static uint8_t prev_state = state;
+    static int fade = 5;
     static bool going_up = true;
-
-    if(led_usb_state && !led_oncall_state) {
+    
+    if( !get_state(STATE_ONCALL) ) {
+        if ( ( board_millis() - start_ms < interval_ms ) ) 
+        return;
+        start_ms += interval_ms;
+        interval_ms = BLINK_STEP;
         if (going_up) {
-            fade+=16;
-            if (fade > 255) {
-                fade = 255;
+            fade+=1;
+            if (fade > 10) {
+                fade = 10;
                 going_up = false;
             }
         } else {
-            fade-=16;
-            if (fade < 0) {
-                fade = 0;
+            fade-=1;
+            if (fade < 6) {
+                fade = 5;
                 going_up = true;
-                led_usb_state = false;
+                if (get_state(STATE_USB_MOUNTED)) {
+                    interval_ms = BLINK_MOUNTED;
+                } else if (get_state(STATE_USB_SUSPENDED)) {
+                    interval_ms = BLINK_SUSPENDED;
+                } else {
+                    interval_ms = BLINK_NOT_MOUNTED;
+                }
             }
         }
-        pwm_set_gpio_level(PWM_LED_PIN, fade * fade);
-        put_pixel((fade*fade)>>8);
-        next_blink_interval_ms = 10;
+        uint32_t c = fade;
+        c <<= 8;
+        c |= fade;
+        c <<= 8;
+        c |= fade;
+        put_all_pixels(c);
     } else {
-        led_usb_state = true;
-        next_blink_interval_ms = blink_interval_ms;
+        interval_ms = 50;
+        if ( ( board_millis() - start_ms < interval_ms ) ) 
+            return;
+        start_ms += interval_ms;
+        if (prev_state != state) {
+            if(get_state(STATE_MUTE)) {
+                put_all_pixels(0x00ff00);
+            } else {
+                put_all_pixels(0xff0000);
+            }
+            prev_state = state;
+        }
     }
-  
+
+
 }
 
 //--------------------------------------------------------------------+
 // Init GPIO output leds with LED_MASK
 //--------------------------------------------------------------------+
-void leds_init() {
-    gpio_init_mask(LED_MASK);
-    gpio_set_dir_out_masked(LED_MASK);
-    gpio_put_masked(LED_MASK,0x00000000);
-    put_pixel(0x000000);
+void led_init(uint pin, bool isRGBW) {
+    neopixel_init(pin, isRGBW);
+    for (int i = 0; i < NUM_PIXELS; i++) {
+        put_all_pixels(0x000000);
+    }
+
 }    
 
 //--------------------------------------------------------------------+
 // Toggle leds defined in mask
 //--------------------------------------------------------------------+
-void led_toggle(uint32_t led_mask) {
-    gpio_put_masked(led_mask,~gpio_get_all());
+void led_toggle(uint32_t color) {
+   
 }
 
 //--------------------------------------------------------------------+
 // Blink leds defined in mask
 //--------------------------------------------------------------------+
-void led_blink(uint32_t led_mask) {
-    led_toggle(led_mask);
-    sleep_ms(100);
-    led_toggle(led_mask);
-}
-
-void leds_update() {
-    uint32_t leds=0x00000000;
- 
-    if(led_oncall_state) {
-        pwm_set_gpio_level(PWM_LED_PIN, 0);
-        sleep_ms(5);
-        pwm_set_enabled(slice_num,false);
-
-        if(led_mute_state){
-            leds=LED_R_PIN;
-            put_pixel(0xff<<8);
-        } else {
-            leds=LED_G_PIN;
-            put_pixel(0xff<<16);
-        }
-    } else {
-        pwm_set_enabled(slice_num,true);
-        put_pixel(0x000000);
-
-    }
-    
-    gpio_put_masked(LED_MASK,leds);
+void led_blink(uint32_t color) {
+    put_all_pixels(color);
+    sleep_ms(200);
+    put_all_pixels(0x000000);   
 }
 
 void button_init(uint button) {
@@ -320,13 +433,13 @@ void button_init(uint button) {
 }
 
 void buttons_init() {
-
+    
     gpio_init_mask(BUTTON_MASK);
     gpio_set_dir_in_masked(BUTTON_MASK);
 
     for ( uint8_t pin = 0; pin < NUM_BANK0_GPIOS; pin ++) {
         if ( ( BUTTON_MASK >> pin ) & 0x000001 ) {
-                gpio_pull_up(pin);
+            gpio_pull_up(pin);
         }
     }
 
