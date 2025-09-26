@@ -4,3 +4,9 @@
 [submodule "code/tinyusb"]
 	path = code/tinyusb
 	url = https://github.com/hathach/tinyusb.git
+[submodule "code/RP2040-Rotary-Encoder"]
+	path = code/RP2040-Rotary-Encoder
+	url = https://github.com/TuriSc/RP2040-Rotary-Encoder
+[submodule "code/RP2040-Button"]
+	path = code/RP2040-Button
+	url = https://github.com/TuriSc/RP2040-Button
