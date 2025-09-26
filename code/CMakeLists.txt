@@ -18,6 +18,11 @@ add_executable(mute_button src/mute_button.cc src/tinyusb_stuff.cc src/our_descr
 
 pico_generate_pio_header(mute_button ${CMAKE_CURRENT_LIST_DIR}/src/ws2812.pio)
 
+# Add a compile definition for debugging based on the build type.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(mute_button PRIVATE SERIAL_DEBUG=1)
+endif()
+
 pico_enable_stdio_usb(mute_button 0)
 pico_enable_stdio_uart(mute_button 1)
 

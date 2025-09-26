@@ -2,9 +2,7 @@
 #include <tusb.h>
 
 #include <hardware/gpio.h>
-#include <hardware/pwm.h>
 #include <pico/bootrom.h>
-#include <pico/unique_id.h>
 #include <pico/stdio.h>
 
 #include "encoder.h"
@@ -12,6 +10,13 @@
 #include "ws2812.h"
 #include "our_descriptor.h"
 #include "me.h"
+
+// --- Debug Macro ---
+#if SERIAL_DEBUG
+#define DEBUG_PRINTF(...) printf(__VA_ARGS__)
+#else
+#define DEBUG_PRINTF(...)
+#endif
 
 // --- Constants for Readability ---
 namespace constants {
@@ -135,7 +140,7 @@ int main() {
         reset_usb_boot(0, 0);
     }
 
-    printf("Shhh - Mute button 0x01\nSerial: %s\n",serial_str);
+    DEBUG_PRINTF("Shhh - Mute button 0x01\nSerial: %s\n",serial_str);
 
     led_blink(constants::LED_COLOR_STARTUP_BLINK);
     sleep_ms(constants::BLINK_DELAY_MS);
@@ -162,11 +167,11 @@ int main() {
 void q_push(Event e) {
 // Use a critical section to prevent race conditions from interrupts.
     uint32_t status = save_and_disable_interrupts();
-    printf("Pushing: %d\n",static_cast<uint8_t>(Event::HOOK_DOWN));
+    DEBUG_PRINTF("Pushing: %d\n",static_cast<uint8_t>(e));
     uint8_t next_queue_end=queue_end;
     if( ++next_queue_end >= Q_LENGTH ) next_queue_end = 0;    
     if( next_queue_end == queue_start ) {
-        printf("Queue Full: Ignored\n");
+        DEBUG_PRINTF("Queue Full: Ignored\n");
         restore_interrupts(status);
         return;
     }
@@ -231,17 +236,17 @@ bool state_get(DeviceState s) {
  */
 void input_onchange(rotary_encoder_t *encoder) {
 
-    printf("Position: %li\n", encoder->position);
-    printf("State: %d%d\n", encoder->state & 0b10 ? 1 : 0, encoder->state & 0b01);
+    DEBUG_PRINTF("Position: %li\n", encoder->position);
+    DEBUG_PRINTF("State: %d%d\n", encoder->state & 0b10 ? 1 : 0, encoder->state & 0b01);
     if(encoder->position > constants::ENCODER_THRESHOLD) {
         q_push(Event::VOLU_DOWN);
-        printf("VOLU_DOWN\n");
+        DEBUG_PRINTF("VOLU_DOWN\n");
     } else if (encoder->position < -constants::ENCODER_THRESHOLD) {
         q_push(Event::VOLD_DOWN);
-        printf("VOLU_DOWN\n");
+        DEBUG_PRINTF("VOLD_DOWN\n");
     } else return;
     q_push(Event::VOL_RELEASE);
-    printf("VOLX_UP\n");
+    DEBUG_PRINTF("VOLX_UP\n");
     encoder->position=0;
 
 
@@ -254,7 +259,7 @@ void input_onchange(rotary_encoder_t *encoder) {
 void input_onpress(button_t *button) {
     Event e=Event::NOTHING;
 
-    printf("Button pressed: %s\n", button->state ? "Released" : "Pressed");
+    DEBUG_PRINTF("Button pressed: %s\n", button->state ? "Released" : "Pressed");
     
     switch (button->pin) {
         case constants::HOOK_BUTTON_PIN:
@@ -351,7 +356,7 @@ void tud_resume_cb(void) {
  * such as whether it is in a call or muted.
  */
 void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer, uint16_t bufsize) {
-    printf("tud_hid_set_report_cb: itf=%u report_id=%u  report_type=%u bufsize=%u\n",itf,report_id,report_type,bufsize);    
+    DEBUG_PRINTF("tud_hid_set_report_cb: itf=%u report_id=%u  report_type=%u bufsize=%u\n",itf,report_id,report_type,bufsize);    
     if (report_type == HID_REPORT_TYPE_OUTPUT && bufsize >= 1 && report_id == REPORT_ID_TELEPHONY ) {
         
         if(buffer[0] & 0x01) state_set(DeviceState::ON_CALL);
@@ -360,11 +365,11 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
         if( buffer[0] & 0x02 ) state_set(DeviceState::MUTE_ACTIVE);
         else state_unset(DeviceState::MUTE_ACTIVE);
         
-        printf("tud_hid_set_report_cb: state=%u\n",device_state_flags);
+        DEBUG_PRINTF("tud_hid_set_report_cb: state=%u\n",device_state_flags);
 
         if (state_get(DeviceState::ON_CALL)) {
             q_push(Event::HOOK_UP);
-            printf("tud_hid_set_report_cb: HOOK_UP");
+            DEBUG_PRINTF("tud_hid_set_report_cb: HOOK_UP\n");
         }
 
     }

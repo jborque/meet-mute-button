@@ -5,7 +5,6 @@
  */
 
 #include "hardware/pio.h"
-#include "pico/stdlib.h"
 #include "ws2812.pio.h"
 
 #include "ws2812.h"
